@@ -447,3 +447,99 @@ describe("head() and extend()", () => {
     expect(childOnly).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("validateStatus", () => {
+  it("treats statuses it accepts as success", async () => {
+    const api = createClient({
+      fetch: mockFetch(json({ gone: true }, 404)),
+      validateStatus: (s) => s < 500,
+    });
+
+    await expect(api.get("https://api.test")).resolves.toEqual({ gone: true });
+  });
+
+  it("throws HTTPError for 2xx statuses it rejects", async () => {
+    const api = createClient({ fetch: mockFetch(json({}, 200)), validateStatus: () => false });
+
+    await expect(api.get("https://api.test")).rejects.toBeInstanceOf(HTTPError);
+  });
+
+  it("does not retry statuses it accepts", async () => {
+    const fetch = mockFetch(json({}, 503));
+    const api = createClient({ fetch, retries: 2, retryDelay: 1, validateStatus: () => true });
+
+    await api.get("https://api.test");
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("onRetry", () => {
+  it("reports each retry with its attempt number, error and delay", async () => {
+    const onRetry = vi.fn();
+    const api = createClient({
+      fetch: mockFetch(json({}, 503), new TypeError("offline"), json({ ok: true })),
+      retries: 2,
+      retryDelay: 5,
+      onRetry,
+    });
+
+    await api.get("https://api.test");
+
+    expect(onRetry).toHaveBeenCalledTimes(2);
+    expect(onRetry.mock.calls[0]![0]).toMatchObject({
+      attempt: 1,
+      delay: 5,
+      error: expect.any(HTTPError),
+    });
+    expect(onRetry.mock.calls[1]![0]).toMatchObject({
+      attempt: 2,
+      error: expect.any(NetworkError),
+    });
+    expect(onRetry.mock.calls[1]![0].request.url).toBe("https://api.test");
+  });
+
+  it("is not called when nothing is retried", async () => {
+    const onRetry = vi.fn();
+    await createClient({ fetch: mockFetch(json({})), retries: 2, onRetry }).get("https://api.test");
+
+    expect(onRetry).not.toHaveBeenCalled();
+  });
+});
+
+describe("responseType: stream", () => {
+  it("returns the unread body stream", async () => {
+    const api = createClient({ fetch: mockFetch(new Response("chunk")) });
+
+    const stream = await api.get<ReadableStream<Uint8Array>>("https://api.test", {
+      responseType: "stream",
+    });
+
+    await expect(new Response(stream).text()).resolves.toBe("chunk");
+  });
+
+  it("still parses error bodies so HTTPError carries them", async () => {
+    const api = createClient({ fetch: mockFetch(json({ message: "no" }, 500)) });
+
+    const error = await caught(api.get("https://api.test", { responseType: "stream" }));
+
+    expect(error).toBeInstanceOf(HTTPError);
+    expect(error.data).toEqual({ message: "no" });
+  });
+
+  it("lets the caller's signal cancel the stream after the response arrived", async () => {
+    let streamSignal: AbortSignal | undefined;
+    const fetch: FetchFunction = async (_url, init) => {
+      streamSignal = init?.signal ?? undefined;
+      return new Response("chunk");
+    };
+    const controller = new AbortController();
+
+    await createClient({ fetch }).get("https://api.test", {
+      responseType: "stream",
+      signal: controller.signal,
+    });
+    controller.abort();
+
+    expect(streamSignal?.aborted).toBe(true);
+  });
+});

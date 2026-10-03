@@ -11,4 +11,6 @@ Initial release.
 - Request and response interceptors
 - `HTTPError`, `TimeoutError`, `NetworkError`, `AbortError` and `YavqoError`
 - `extend()` for derived clients, `head()`, `retryStatuses`, and `Retry-After` support (capped at 30s)
+- `validateStatus`, `onRetry`, and `responseType: "stream"`
+- `@yavqo/fetch/testing` with `mockFetch` and `jsonResponse`
 - Status helpers: `isSuccess`, `isRedirect`, `isClientError`, `isServerError`, `isInformational`

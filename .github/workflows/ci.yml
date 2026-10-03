@@ -25,3 +25,52 @@ jobs:
       - run: npm test
       - run: npm run build
       - run: npm run size
+      - run: npm run smoke
+      - if: matrix.node == 22
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist
+
+  # Runs the built package, not the source, on the other runtimes we claim to support.
+  runtimes:
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        runtime: [node18, bun, deno]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      - if: matrix.runtime == 'node18'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+      - if: matrix.runtime == 'node18'
+        run: node scripts/smoke.mjs
+      - if: matrix.runtime == 'bun'
+        uses: oven-sh/setup-bun@v2
+      - if: matrix.runtime == 'bun'
+        run: bun scripts/smoke.mjs
+      - if: matrix.runtime == 'deno'
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - if: matrix.runtime == 'deno'
+        run: deno run -A scripts/smoke.mjs
+
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npx --yes @arethetypeswrong/cli --pack . --profile node16

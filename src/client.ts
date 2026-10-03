@@ -8,6 +8,7 @@ import type {
   ResponseInterceptor,
   YavqoResponse,
 } from "./types";
+import { isSuccess } from "./status";
 import { buildURL, isJSONBody, mergeHeaders, parseBody, sleep } from "./utils";
 
 const IDEMPOTENT_METHODS = ["GET", "HEAD", "OPTIONS", "PUT", "DELETE"];
@@ -50,7 +51,7 @@ function build(
       if (next) response = next;
     }
 
-    if (!response.ok) throw new HTTPError(response);
+    if (!config.validateStatus(response.status)) throw new HTTPError(response);
     return response as YavqoResponse<T>;
   }
 
@@ -98,6 +99,8 @@ function resolveConfig(
     retryDelay = defaultRetryDelay,
     retryMethods = IDEMPOTENT_METHODS,
     retryStatuses = RETRY_STATUSES,
+    onRetry,
+    validateStatus = isSuccess,
     responseType = "auto",
     fetch,
     ...init
@@ -127,6 +130,8 @@ function resolveConfig(
     retryDelay,
     retryMethods: retryMethods.map((m) => m.toUpperCase()),
     retryStatuses,
+    onRetry,
+    validateStatus,
     responseType,
     fetch,
     init,
@@ -140,7 +145,11 @@ async function send(config: RequestConfig): Promise<YavqoResponse> {
 
     try {
       const response = await attemptOnce(config);
-      if (response.ok || !canRetry || !config.retryStatuses.includes(response.status))
+      if (
+        config.validateStatus(response.status) ||
+        !canRetry ||
+        !config.retryStatuses.includes(response.status)
+      )
         return response;
       error = new HTTPError(response);
     } catch (e) {
@@ -150,7 +159,9 @@ async function send(config: RequestConfig): Promise<YavqoResponse> {
 
     const { retryDelay } = config;
     const delay = typeof retryDelay === "function" ? retryDelay(attempt, error) : retryDelay;
-    await sleep(retryAfter(error) ?? delay, config.signal);
+    const wait = retryAfter(error) ?? delay;
+    config.onRetry?.({ attempt: attempt + 1, error, delay: wait, request: config });
+    await sleep(wait, config.signal);
   }
 }
 
@@ -169,6 +180,7 @@ async function attemptOnce(config: RequestConfig): Promise<YavqoResponse> {
   const controller = new AbortController();
   const { signal, timeout } = config;
   let timedOut = false;
+  let streaming = false;
 
   const abort = () => controller.abort();
   const timer =
@@ -191,7 +203,11 @@ async function attemptOnce(config: RequestConfig): Promise<YavqoResponse> {
       body: config.body,
       signal: controller.signal,
     });
-    const data = await parseBody(raw, config.responseType);
+    // A stream is handed back unread. Error responses are still parsed so HTTPError carries a body.
+    streaming = config.responseType === "stream" && config.validateStatus(raw.status);
+    const data = streaming
+      ? raw.body
+      : await parseBody(raw, config.responseType === "stream" ? "auto" : config.responseType);
 
     return {
       data,
@@ -209,6 +225,7 @@ async function attemptOnce(config: RequestConfig): Promise<YavqoResponse> {
     throw new NetworkError(error);
   } finally {
     clearTimeout(timer);
-    signal?.removeEventListener("abort", abort);
+    // While a stream is being consumed, the caller's signal must still be able to cancel it.
+    if (!streaming) signal?.removeEventListener("abort", abort);
   }
 }

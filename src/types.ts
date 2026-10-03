@@ -3,11 +3,21 @@ export type HeadersLike = HeadersInit | Record<string, string | undefined>;
 export type QueryValue = string | number | boolean | Date | null | undefined;
 export type Query = Record<string, QueryValue | QueryValue[]>;
 
-export type ResponseType = "auto" | "json" | "text" | "blob" | "arrayBuffer";
+export type ResponseType = "auto" | "json" | "text" | "blob" | "arrayBuffer" | "stream";
 
 export type RetryDelay = number | ((attempt: number, error: unknown) => number);
 
 export type FetchFunction = (input: string, init?: RequestInit) => Promise<Response>;
+
+export interface RetryInfo {
+  /** Which retry this is, starting at 1. */
+  attempt: number;
+  /** What failed: an `HTTPError`, `NetworkError` or `TimeoutError`. */
+  error: unknown;
+  /** Milliseconds until the retry is sent. */
+  delay: number;
+  request: RequestConfig;
+}
 
 export interface RequestOptions extends Omit<
   RequestInit,
@@ -30,7 +40,14 @@ export interface RequestOptions extends Omit<
   retryMethods?: string[];
   /** Response statuses that are retried. Default: `408 425 429 500 502 503 504`. */
   retryStatuses?: number[];
-  /** How to read the response body. `auto` picks JSON or text from the `content-type` header. */
+  /** Called before each retry. Useful for logging and metrics. */
+  onRetry?: (info: RetryInfo) => void;
+  /** Decides whether a status is a success. Statuses it rejects throw `HTTPError`. Default: 2xx. */
+  validateStatus?: (status: number) => boolean;
+  /**
+   * How to read the response body. `auto` picks JSON or text from the `content-type` header.
+   * `stream` returns `response.body` unread, and the timeout then only covers waiting for headers.
+   */
   responseType?: ResponseType;
   /** Custom `fetch` implementation. Defaults to the global `fetch`. */
   fetch?: FetchFunction;
@@ -52,6 +69,8 @@ export interface RequestConfig {
   retryDelay: RetryDelay;
   retryMethods: string[];
   retryStatuses: number[];
+  onRetry?: (info: RetryInfo) => void;
+  validateStatus: (status: number) => boolean;
   responseType: ResponseType;
   fetch?: FetchFunction;
   /** Remaining options forwarded to `fetch` (`credentials`, `cache`, `next`, ...). */

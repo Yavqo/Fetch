@@ -53,7 +53,10 @@ export function isJSONBody(body: unknown): boolean {
   return proto === Object.prototype || proto === null;
 }
 
-export async function parseBody(response: Response, type: ResponseType): Promise<unknown> {
+export async function parseBody(
+  response: Response,
+  type: Exclude<ResponseType, "stream">,
+): Promise<unknown> {
   if (type === "blob") return response.blob();
   if (type === "arrayBuffer") return response.arrayBuffer();
 

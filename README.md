@@ -2,7 +2,7 @@
 
 **Native fetch, but cleaner.**
 
-A tiny, typed HTTP client for JavaScript and TypeScript, built on the platform `fetch`. No runtime dependencies, about 3 KB gzipped, and it runs anywhere `fetch` does: Node.js 18+, browsers, Next.js, Deno, Bun and edge runtimes.
+A tiny, typed HTTP client for JavaScript and TypeScript, built on the platform `fetch`. No runtime dependencies, about 3 KB gzipped, and it runs anywhere `fetch` does. The built package is tested in CI on Node.js 18 to 24, Bun and Deno, and it only uses standard web APIs, so browsers, Next.js and edge runtimes work too.
 
 ```ts
 import { createClient } from "@yavqo/fetch";
@@ -23,7 +23,9 @@ const user = await api.get<User>("/users/123");
 - Typed responses: `api.get<User>(...)`
 - Base URL, default headers, and query parameters
 - Timeouts and `AbortController` cancellation
-- Retries with configurable count, delay and methods
+- Retries with configurable count, delay, methods and statuses, plus an `onRetry` hook
+- Custom success rules with `validateStatus`, and streaming responses
+- A small `@yavqo/fetch/testing` helper for mocking `fetch`
 - Request and response interceptors
 - Consistent, typed errors
 - HTTP status helpers
@@ -111,6 +113,15 @@ A request is retried when:
 
 If the server sends a `Retry-After` header (for example with a `429`), it is used instead of `retryDelay`, capped at 30 seconds. Use `retryStatuses` to change which statuses are retried.
 
+Use `onRetry` to log or measure retries:
+
+```ts
+const api = createClient({
+  retries: 3,
+  onRetry: ({ attempt, error, delay }) => console.warn(`retry ${attempt} in ${delay}ms`, error),
+});
+```
+
 By default only idempotent methods (`GET`, `HEAD`, `OPTIONS`, `PUT`, `DELETE`) are retried, so a `POST` is never sent twice by surprise. Opt in per client or per request:
 
 ```ts
@@ -118,6 +129,26 @@ await api.post("/orders", order, { retries: 2, retryMethods: ["POST"] });
 ```
 
 The default delay is exponential: 300ms, 600ms, 1200ms, and so on. Aborting the request also cancels any pending retry delay.
+
+### Custom success rules
+
+By default any non-2xx status throws `HTTPError`. Use `validateStatus` to change that:
+
+```ts
+// Treat 404 as "no result" instead of an error
+const user = await api.get<User | undefined>("/users/9", { validateStatus: (s) => s < 500 });
+```
+
+Statuses that `validateStatus` accepts are never retried.
+
+### Streaming
+
+```ts
+const body = await api.get<ReadableStream<Uint8Array>>("/export.csv", { responseType: "stream" });
+for await (const chunk of body) process(chunk);
+```
+
+The body is returned unread. The timeout then only covers waiting for the response headers, and aborting the request's `signal` still cancels the stream. Error responses are still parsed so `HTTPError` carries their body.
 
 ### Derived clients
 
@@ -216,20 +247,22 @@ Returns a client. `options` are defaults for every request and accept everything
 
 All standard `fetch` options (`credentials`, `cache`, `mode`, `keepalive`, ...) plus:
 
-| Option          | Type                                                    | Default                       | Description                              |
-| --------------- | ------------------------------------------------------- | ----------------------------- | ---------------------------------------- |
-| `baseURL`       | `string`                                                |                               | Prepended to relative URLs               |
-| `headers`       | `HeadersInit \| Record<string, string \| undefined>`    |                               | Merged over client defaults              |
-| `query`         | `Record<string, value \| value[]>`                      |                               | URL query parameters                     |
-| `body`          | `unknown`                                               |                               | Objects and arrays become JSON           |
-| `signal`        | `AbortSignal`                                           |                               | Cancels the request                      |
-| `timeout`       | `number`                                                | `0` (none)                    | Milliseconds per attempt                 |
-| `retries`       | `number`                                                | `0`                           | Extra attempts after the first           |
-| `retryDelay`    | `number \| (attempt, error) => number`                  | `300 * 2 ** attempt`          | Delay before each retry, in ms           |
-| `retryStatuses` | `number[]`                                              | `408 425 429 500 502 503 504` | Statuses that may be retried             |
-| `retryMethods`  | `string[]`                                              | `GET HEAD OPTIONS PUT DELETE` | Methods that may be retried              |
-| `responseType`  | `"auto" \| "json" \| "text" \| "blob" \| "arrayBuffer"` | `"auto"`                      | How to read the body                     |
-| `fetch`         | `typeof fetch`                                          | global `fetch`                | Custom implementation (useful for tests) |
+| Option           | Type                                                    | Default                       | Description                              |
+| ---------------- | ------------------------------------------------------- | ----------------------------- | ---------------------------------------- |
+| `baseURL`        | `string`                                                |                               | Prepended to relative URLs               |
+| `headers`        | `HeadersInit \| Record<string, string \| undefined>`    |                               | Merged over client defaults              |
+| `query`          | `Record<string, value \| value[]>`                      |                               | URL query parameters                     |
+| `body`           | `unknown`                                               |                               | Objects and arrays become JSON           |
+| `signal`         | `AbortSignal`                                           |                               | Cancels the request                      |
+| `timeout`        | `number`                                                | `0` (none)                    | Milliseconds per attempt                 |
+| `retries`        | `number`                                                | `0`                           | Extra attempts after the first           |
+| `retryDelay`     | `number \| (attempt, error) => number`                  | `300 * 2 ** attempt`          | Delay before each retry, in ms           |
+| `retryStatuses`  | `number[]`                                              | `408 425 429 500 502 503 504` | Statuses that may be retried             |
+| `onRetry`        | `(info) => void`                                        |                               | Called before each retry                 |
+| `validateStatus` | `(status) => boolean`                                   | 2xx                           | Statuses that count as success           |
+| `retryMethods`   | `string[]`                                              | `GET HEAD OPTIONS PUT DELETE` | Methods that may be retried              |
+| `responseType`   | `"auto" \| "json" \| "text" \| "blob" \| "arrayBuffer"` | `"auto"`                      | How to read the body                     |
+| `fetch`          | `typeof fetch`                                          | global `fetch`                | Custom implementation (useful for tests) |
 
 With `responseType: "auto"`, bodies with a JSON `content-type` are parsed, an empty body gives `undefined`, and anything else is returned as text.
 
@@ -247,7 +280,7 @@ With `responseType: "auto"`, bodies with a JSON `content-type` are parsed, an em
 
 ### Types
 
-`Client`, `ClientOptions`, `RequestOptions`, `RequestConfig`, `RequestInterceptor`, `ResponseInterceptor`, `YavqoResponse`, `ResponseType`, `RetryDelay`, `Query`, `HeadersLike` and `FetchFunction` are all exported.
+`Client`, `ClientOptions`, `RetryInfo`, `RequestOptions`, `RequestConfig`, `RequestInterceptor`, `ResponseInterceptor`, `YavqoResponse`, `ResponseType`, `RetryDelay`, `Query`, `HeadersLike` and `FetchFunction` are all exported.
 
 ## Examples
 

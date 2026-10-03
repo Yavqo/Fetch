@@ -15,5 +15,6 @@ export type {
   ResponseInterceptor,
   ResponseType,
   RetryDelay,
+  RetryInfo,
   YavqoResponse,
 } from "./types";

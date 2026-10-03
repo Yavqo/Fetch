@@ -11,7 +11,7 @@
     "isolatedModules": true,
     "skipLibCheck": true,
     "noEmit": true,
-    "paths": { "@yavqo/fetch": ["./src/index.ts"] }
+    "paths": { "@yavqo/fetch": ["./src/index.ts"], "@yavqo/fetch/testing": ["./src/testing.ts"] }
   },
   "include": ["src", "test", "examples", "tsup.config.ts", "vitest.config.ts"]
 }
