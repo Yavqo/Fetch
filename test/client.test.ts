@@ -543,3 +543,110 @@ describe("responseType: stream", () => {
     expect(streamSignal?.aborted).toBe(true);
   });
 });
+
+describe("path params and default query", () => {
+  it("fills :name placeholders and URL-encodes the values", async () => {
+    const fetch = mockFetch(json({}));
+    const api = createClient({ fetch, baseURL: "https://api.test" });
+
+    await api.get("/users/:id/files/:name", { params: { id: 7, name: "a b/c" } });
+
+    expect(fetch.mock.calls[0]![0]).toBe("https://api.test/users/7/files/a%20b%2Fc");
+  });
+
+  it("leaves ports and unknown placeholders alone", async () => {
+    const fetch = mockFetch(json({}));
+    const api = createClient({ fetch });
+
+    await api.get("http://localhost:3000/:kind/:id", { params: { id: 1 } });
+
+    expect(fetch.mock.calls[0]![0]).toBe("http://localhost:3000/:kind/1");
+  });
+
+  it("merges client default query with per-request query", async () => {
+    const fetch = mockFetch(json({}));
+    const api = createClient({ fetch, query: { key: "k", lang: "en" } });
+
+    await api.get("https://api.test/x", { query: { lang: "fr", page: 2 } });
+    await api.get("https://api.test/y");
+    await api.get("https://api.test/z", { query: { key: undefined } });
+
+    expect(fetch.mock.calls.map((c) => c[0])).toEqual([
+      "https://api.test/x?key=k&lang=fr&page=2",
+      "https://api.test/y?key=k&lang=en",
+      "https://api.test/z?lang=en",
+    ]);
+  });
+});
+
+describe("error messages", () => {
+  it("name the method and URL but never the query string", async () => {
+    const api = createClient({ fetch: mockFetch(json({}, 404)) });
+
+    const error = await caught(api.get("https://api.test/users/1?api_key=secret#frag"));
+
+    expect(error.message).toBe("GET https://api.test/users/1 failed with status 404");
+    expect(error.request).toEqual({ method: "GET", url: "https://api.test/users/1" });
+    expect(JSON.stringify(error.request)).not.toContain("secret");
+  });
+
+  it("are used by TimeoutError and NetworkError too", async () => {
+    const timeout = await caught(
+      createClient({ fetch: hangingFetch, timeout: 10 }).get("https://api.test/slow?token=x"),
+    );
+    const network = await caught(
+      createClient({ fetch: mockFetch(new TypeError("down")) }).post("https://api.test/a", {}),
+    );
+
+    expect(timeout.message).toBe("GET https://api.test/slow timed out after 10ms");
+    expect(network.message).toBe("POST https://api.test/a failed: no response received");
+  });
+});
+
+describe("totalTimeout", () => {
+  it("bounds the whole call across retries and reports the total", async () => {
+    const fetch = vi.fn(hangingFetch);
+    const api = createClient({ fetch, timeout: 20, retries: 20, retryDelay: 1, totalTimeout: 100 });
+    const started = Date.now();
+
+    const error = await caught(api.get("https://api.test"));
+
+    expect(error).toBeInstanceOf(TimeoutError);
+    expect(error.timeout).toBe(100);
+    expect(Date.now() - started).toBeLessThan(400);
+    expect(fetch.mock.calls.length).toBeLessThan(21);
+  });
+
+  it("returns the last response instead of waiting past the deadline", async () => {
+    const limited = new Response("{}", { status: 503, headers: { "retry-after": "10" } });
+    const fetch = mockFetch(limited);
+    const api = createClient({ fetch, retries: 3, totalTimeout: 1000 });
+
+    const error = await caught(api.get("https://api.test"));
+
+    expect(error).toBeInstanceOf(HTTPError);
+    expect(error.status).toBe(503);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("retryJitter", () => {
+  it("scales the delay to between 50% and 100%", async () => {
+    const onRetry = vi.fn();
+    const random = vi.spyOn(Math, "random").mockReturnValue(0);
+    try {
+      const api = createClient({
+        fetch: mockFetch(json({}, 503), json({})),
+        retries: 1,
+        retryDelay: 20,
+        retryJitter: true,
+        onRetry,
+      });
+      await api.get("https://api.test");
+    } finally {
+      random.mockRestore();
+    }
+
+    expect(onRetry.mock.calls[0]![0].delay).toBe(10);
+  });
+});

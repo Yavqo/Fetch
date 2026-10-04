@@ -26,16 +26,23 @@ export interface RequestOptions extends Omit<
   /** Prepended to relative URLs. Ignored when the URL is absolute. */
   baseURL?: string;
   headers?: HeadersLike;
+  /** Query parameters. Merged over the client's default `query`. */
   query?: Query;
+  /** Values for `:name` placeholders in the URL path, e.g. `/users/:id`. Values are URL-encoded. */
+  params?: Record<string, string | number | boolean>;
   /** Plain objects and arrays are sent as JSON. Everything else is passed to `fetch` as-is. */
   body?: unknown;
   signal?: AbortSignal | null;
   /** Milliseconds before the request is aborted. `0` disables the timeout. Default: `0`. */
   timeout?: number;
+  /** Milliseconds allowed for the whole call including retries and delays. `0` disables it. Default: `0`. */
+  totalTimeout?: number;
   /** Extra attempts after the first one. Default: `0`. */
   retries?: number;
   /** Milliseconds to wait between attempts, or a function of the attempt number (starting at 0). Default: exponential from 300ms. */
   retryDelay?: RetryDelay;
+  /** Randomizes each retry delay to between 50% and 100% of its value, to avoid synchronized retries. Default: `false`. */
+  retryJitter?: boolean;
   /** Methods that are retried. Default: `GET`, `HEAD`, `OPTIONS`, `PUT`, `DELETE`. */
   retryMethods?: string[];
   /** Response statuses that are retried. Default: `408 425 429 500 502 503 504`. */
@@ -55,7 +62,7 @@ export interface RequestOptions extends Omit<
   next?: { revalidate?: number | false; tags?: string[] };
 }
 
-export type ClientOptions = Omit<RequestOptions, "body" | "query" | "signal">;
+export type ClientOptions = Omit<RequestOptions, "body" | "params" | "signal">;
 
 /** The request as it is sent. Request interceptors may modify or replace it. */
 export interface RequestConfig {
@@ -65,8 +72,10 @@ export interface RequestConfig {
   body?: BodyInit;
   signal?: AbortSignal;
   timeout: number;
+  totalTimeout: number;
   retries: number;
   retryDelay: RetryDelay;
+  retryJitter: boolean;
   retryMethods: string[];
   retryStatuses: number[];
   onRetry?: (info: RetryInfo) => void;

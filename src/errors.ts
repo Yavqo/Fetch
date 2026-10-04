@@ -1,5 +1,14 @@
 import type { YavqoResponse } from "./types";
 
+/** What was being requested. The URL never includes the query string, which may hold secrets. */
+export interface RequestInfo {
+  method: string;
+  url: string;
+}
+
+const describe = (request?: RequestInfo) =>
+  request ? `${request.method} ${request.url}` : "Request";
+
 /** Base class for every error thrown by Yavqo Fetch. */
 export class YavqoError extends Error {
   readonly code: string;
@@ -18,34 +27,41 @@ export class HTTPError extends YavqoError {
   /** The parsed response body, if any. */
   readonly data: unknown;
   readonly response: YavqoResponse;
+  readonly request?: RequestInfo;
 
-  constructor(response: YavqoResponse) {
+  constructor(response: YavqoResponse, request?: RequestInfo) {
     const reason = response.statusText ? ` ${response.statusText}` : "";
-    super(`Request failed with status ${response.status}${reason}`, "HTTP_ERROR");
+    super(`${describe(request)} failed with status ${response.status}${reason}`, "HTTP_ERROR");
     this.name = "HTTPError";
     this.status = response.status;
     this.statusText = response.statusText;
     this.data = response.data;
     this.response = response;
+    this.request = request;
   }
 }
 
 /** The request did not complete within the configured timeout. */
 export class TimeoutError extends YavqoError {
   readonly timeout: number;
+  readonly request?: RequestInfo;
 
-  constructor(timeout: number, options?: { cause?: unknown }) {
-    super(`Request timed out after ${timeout}ms`, "TIMEOUT", options);
+  constructor(timeout: number, options?: { cause?: unknown; request?: RequestInfo }) {
+    super(`${describe(options?.request)} timed out after ${timeout}ms`, "TIMEOUT", options);
     this.name = "TimeoutError";
     this.timeout = timeout;
+    this.request = options?.request;
   }
 }
 
 /** The request never received a response (DNS failure, connection reset, CORS, ...). */
 export class NetworkError extends YavqoError {
-  constructor(cause?: unknown) {
-    super("Network request failed", "NETWORK_ERROR", { cause });
+  readonly request?: RequestInfo;
+
+  constructor(cause?: unknown, request?: RequestInfo) {
+    super(`${describe(request)} failed: no response received`, "NETWORK_ERROR", { cause });
     this.name = "NetworkError";
+    this.request = request;
   }
 }
 

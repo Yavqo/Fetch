@@ -40,6 +40,9 @@ try {
     type: "application/json",
   });
 
+  const viaParams = await api.get("/items/:id", { params: { id: "a b" }, query: { q: 1 } });
+  assert.equal(viaParams.url, "/items/a%20b?q=1");
+
   const retries = [];
   await api.get("/flaky", { onRetry: (info) => retries.push(info.attempt) });
   assert.deepEqual(retries, [1, 2]);

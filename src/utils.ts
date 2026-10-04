@@ -3,7 +3,19 @@ import type { HeadersLike, Query, QueryValue, ResponseType } from "./types";
 
 const ABSOLUTE_URL = /^[a-z][a-z\d+\-.]*:\/\//i;
 
-export function buildURL(url: string, baseURL?: string, query?: Query): string {
+export function buildURL(
+  url: string,
+  baseURL?: string,
+  query?: Query,
+  params?: Record<string, string | number | boolean>,
+): string {
+  if (params) {
+    // Only names present in `params` are replaced, so ports and `user:pass@` are left alone.
+    url = url.replace(/:([A-Za-z_]\w*)/g, (match, name: string) =>
+      name in params ? encodeURIComponent(String(params[name])) : match,
+    );
+  }
+
   let result =
     baseURL && !ABSOLUTE_URL.test(url)
       ? `${baseURL.replace(/\/+$/, "")}/${url.replace(/^\/+/, "")}`
@@ -75,6 +87,11 @@ export async function parseBody(
     }
   }
   return text;
+}
+
+/** `GET https://host/path` without the query string or fragment, safe to put in error messages. */
+export function stripQuery(url: string): string {
+  return url.split(/[?#]/, 1)[0] ?? url;
 }
 
 export function sleep(ms: number, signal?: AbortSignal): Promise<void> {

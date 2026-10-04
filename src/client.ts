@@ -1,4 +1,11 @@
-import { AbortError, HTTPError, NetworkError, TimeoutError, YavqoError } from "./errors";
+import {
+  AbortError,
+  HTTPError,
+  NetworkError,
+  TimeoutError,
+  YavqoError,
+  type RequestInfo,
+} from "./errors";
 import type {
   Client,
   ClientOptions,
@@ -9,7 +16,7 @@ import type {
   YavqoResponse,
 } from "./types";
 import { isSuccess } from "./status";
-import { buildURL, isJSONBody, mergeHeaders, parseBody, sleep } from "./utils";
+import { buildURL, isJSONBody, mergeHeaders, parseBody, sleep, stripQuery } from "./utils";
 
 const IDEMPOTENT_METHODS = ["GET", "HEAD", "OPTIONS", "PUT", "DELETE"];
 const RETRY_STATUSES = [408, 425, 429, 500, 502, 503, 504];
@@ -51,7 +58,7 @@ function build(
       if (next) response = next;
     }
 
-    if (!config.validateStatus(response.status)) throw new HTTPError(response);
+    if (!config.validateStatus(response.status)) throw new HTTPError(response, info(config));
     return response as YavqoResponse<T>;
   }
 
@@ -82,6 +89,10 @@ function build(
   };
 }
 
+function info(config: RequestConfig): RequestInfo {
+  return { method: config.method, url: stripQuery(config.url) };
+}
+
 function resolveConfig(
   url: string,
   defaults: ClientOptions,
@@ -90,13 +101,16 @@ function resolveConfig(
   const {
     baseURL,
     query,
+    params,
     body,
     headers,
     method = "GET",
     signal,
     timeout = 0,
+    totalTimeout = 0,
     retries = 0,
     retryDelay = defaultRetryDelay,
+    retryJitter = false,
     retryMethods = IDEMPOTENT_METHODS,
     retryStatuses = RETRY_STATUSES,
     onRetry,
@@ -120,14 +134,16 @@ function resolveConfig(
   }
 
   return {
-    url: buildURL(url, baseURL, query),
+    url: buildURL(url, baseURL, { ...defaults.query, ...query }, params),
     method: method.toUpperCase(),
     headers: merged,
     body: payload,
     signal: signal ?? undefined,
     timeout,
+    totalTimeout,
     retries,
     retryDelay,
+    retryJitter,
     retryMethods: retryMethods.map((m) => m.toUpperCase()),
     retryStatuses,
     onRetry,
@@ -139,27 +155,38 @@ function resolveConfig(
 }
 
 async function send(config: RequestConfig): Promise<YavqoResponse> {
+  const deadline = config.totalTimeout > 0 ? Date.now() + config.totalTimeout : Infinity;
+
   for (let attempt = 0; ; attempt++) {
     const canRetry = attempt < config.retries && config.retryMethods.includes(config.method);
+    let response: YavqoResponse | undefined;
     let error: unknown;
 
     try {
-      const response = await attemptOnce(config);
+      response = await attemptOnce(config, deadline - Date.now());
       if (
         config.validateStatus(response.status) ||
         !canRetry ||
         !config.retryStatuses.includes(response.status)
       )
         return response;
-      error = new HTTPError(response);
+      error = new HTTPError(response, info(config));
     } catch (e) {
       if (!canRetry || !(e instanceof NetworkError || e instanceof TimeoutError)) throw e;
       error = e;
     }
 
     const { retryDelay } = config;
-    const delay = typeof retryDelay === "function" ? retryDelay(attempt, error) : retryDelay;
+    let delay = typeof retryDelay === "function" ? retryDelay(attempt, error) : retryDelay;
+    if (config.retryJitter) delay *= 0.5 + Math.random() / 2;
     const wait = retryAfter(error) ?? delay;
+
+    // Not enough time left to wait and try again: give back what we already have.
+    if (wait >= deadline - Date.now()) {
+      if (response) return response;
+      throw error;
+    }
+
     config.onRetry?.({ attempt: attempt + 1, error, delay: wait, request: config });
     await sleep(wait, config.signal);
   }
@@ -176,19 +203,26 @@ function retryAfter(error: unknown): number | undefined {
 }
 
 /** One attempt: fetch, read the body, and translate failures into Yavqo errors. */
-async function attemptOnce(config: RequestConfig): Promise<YavqoResponse> {
+async function attemptOnce(config: RequestConfig, remaining: number): Promise<YavqoResponse> {
   const controller = new AbortController();
-  const { signal, timeout } = config;
+  const { signal } = config;
+  const perAttempt = config.timeout > 0 ? config.timeout : Infinity;
+  // Whichever limit is hit first is the one reported in TimeoutError.
+  const limit = Math.min(perAttempt, remaining);
+  const reported = remaining < perAttempt ? config.totalTimeout : config.timeout;
   let timedOut = false;
   let streaming = false;
 
   const abort = () => controller.abort();
   const timer =
-    timeout > 0
-      ? setTimeout(() => {
-          timedOut = true;
-          abort();
-        }, timeout)
+    limit < Infinity
+      ? setTimeout(
+          () => {
+            timedOut = true;
+            abort();
+          },
+          Math.max(limit, 0),
+        )
       : undefined;
 
   if (signal?.aborted) abort();
@@ -220,9 +254,9 @@ async function attemptOnce(config: RequestConfig): Promise<YavqoResponse> {
     };
   } catch (error) {
     if (error instanceof YavqoError) throw error;
-    if (timedOut) throw new TimeoutError(timeout, { cause: error });
+    if (timedOut) throw new TimeoutError(reported, { cause: error, request: info(config) });
     if (signal?.aborted) throw new AbortError({ cause: error });
-    throw new NetworkError(error);
+    throw new NetworkError(error, info(config));
   } finally {
     clearTimeout(timer);
     // While a stream is being consumed, the caller's signal must still be able to cancel it.

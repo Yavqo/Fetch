@@ -75,6 +75,22 @@ await api.get("/search", { query: { q: "fetch", page: 1, tag: ["a", "b"], draft:
 
 `null` and `undefined` values are skipped, arrays repeat the key, and `Date` values are sent as ISO strings. Query parameters are appended to any already in the URL.
 
+### Path parameters
+
+```ts
+await api.get("/users/:id/files/:name", { params: { id: 7, name: "report 1.pdf" } });
+// GET /users/7/files/report%201.pdf
+```
+
+Values are URL-encoded. Only placeholders named in `params` are replaced, so ports (`:3000`) and other colons are left alone.
+
+Set a default `query` on the client for parameters every request needs. Per-request values override it, and `undefined` removes one:
+
+```ts
+const api = createClient({ query: { key: API_KEY } });
+await api.get("/search", { query: { q: "fetch" } }); // /search?key=...&q=fetch
+```
+
 ### Headers
 
 ```ts
@@ -95,7 +111,13 @@ const pending = api.get("/users", { signal: controller.signal });
 controller.abort(); // throws AbortError
 ```
 
-The timeout applies to each attempt, including reading the response body.
+The timeout applies to each attempt, including reading the response body. To bound the whole call, including retries and the delays between them, use `totalTimeout`:
+
+```ts
+await api.get("/slow", { timeout: 2000, retries: 5, totalTimeout: 8000 });
+```
+
+When there isn't enough time left for another retry, the call stops and returns the last failure instead of waiting.
 
 ### Retries
 
@@ -121,6 +143,8 @@ const api = createClient({
   onRetry: ({ attempt, error, delay }) => console.warn(`retry ${attempt} in ${delay}ms`, error),
 });
 ```
+
+Set `retryJitter: true` to randomize each delay to between 50% and 100% of its value, so many clients that fail together don't retry together. It does not change a server's `Retry-After`.
 
 By default only idempotent methods (`GET`, `HEAD`, `OPTIONS`, `PUT`, `DELETE`) are retried, so a `POST` is never sent twice by surprise. Opt in per client or per request:
 
@@ -204,6 +228,8 @@ try {
 }
 ```
 
+Error messages name the method and URL, for example `GET https://api.example.com/users/1 failed with status 404`. The query string is never included, so API keys don't end up in logs. `HTTPError`, `TimeoutError` and `NetworkError` also expose it as `error.request` (`{ method, url }`).
+
 ### Status helpers
 
 ```ts
@@ -247,22 +273,25 @@ Returns a client. `options` are defaults for every request and accept everything
 
 All standard `fetch` options (`credentials`, `cache`, `mode`, `keepalive`, ...) plus:
 
-| Option           | Type                                                    | Default                       | Description                              |
-| ---------------- | ------------------------------------------------------- | ----------------------------- | ---------------------------------------- |
-| `baseURL`        | `string`                                                |                               | Prepended to relative URLs               |
-| `headers`        | `HeadersInit \| Record<string, string \| undefined>`    |                               | Merged over client defaults              |
-| `query`          | `Record<string, value \| value[]>`                      |                               | URL query parameters                     |
-| `body`           | `unknown`                                               |                               | Objects and arrays become JSON           |
-| `signal`         | `AbortSignal`                                           |                               | Cancels the request                      |
-| `timeout`        | `number`                                                | `0` (none)                    | Milliseconds per attempt                 |
-| `retries`        | `number`                                                | `0`                           | Extra attempts after the first           |
-| `retryDelay`     | `number \| (attempt, error) => number`                  | `300 * 2 ** attempt`          | Delay before each retry, in ms           |
-| `retryStatuses`  | `number[]`                                              | `408 425 429 500 502 503 504` | Statuses that may be retried             |
-| `onRetry`        | `(info) => void`                                        |                               | Called before each retry                 |
-| `validateStatus` | `(status) => boolean`                                   | 2xx                           | Statuses that count as success           |
-| `retryMethods`   | `string[]`                                              | `GET HEAD OPTIONS PUT DELETE` | Methods that may be retried              |
-| `responseType`   | `"auto" \| "json" \| "text" \| "blob" \| "arrayBuffer"` | `"auto"`                      | How to read the body                     |
-| `fetch`          | `typeof fetch`                                          | global `fetch`                | Custom implementation (useful for tests) |
+| Option           | Type                                                    | Default                       | Description                                       |
+| ---------------- | ------------------------------------------------------- | ----------------------------- | ------------------------------------------------- |
+| `baseURL`        | `string`                                                |                               | Prepended to relative URLs                        |
+| `headers`        | `HeadersInit \| Record<string, string \| undefined>`    |                               | Merged over client defaults                       |
+| `query`          | `Record<string, value \| value[]>`                      |                               | URL query parameters                              |
+| `body`           | `unknown`                                               |                               | Objects and arrays become JSON                    |
+| `signal`         | `AbortSignal`                                           |                               | Cancels the request                               |
+| `timeout`        | `number`                                                | `0` (none)                    | Milliseconds per attempt                          |
+| `retries`        | `number`                                                | `0`                           | Extra attempts after the first                    |
+| `retryDelay`     | `number \| (attempt, error) => number`                  | `300 * 2 ** attempt`          | Delay before each retry, in ms                    |
+| `retryStatuses`  | `number[]`                                              | `408 425 429 500 502 503 504` | Statuses that may be retried                      |
+| `onRetry`        | `(info) => void`                                        |                               | Called before each retry                          |
+| `validateStatus` | `(status) => boolean`                                   | 2xx                           | Statuses that count as success                    |
+| `totalTimeout`   | `number`                                                | `0` (none)                    | Milliseconds for the whole call, retries included |
+| `retryJitter`    | `boolean`                                               | `false`                       | Randomize retry delays to 50–100%                 |
+| `params`         | `Record<string, string \| number \| boolean>`           |                               | Fills `:name` placeholders in the URL             |
+| `retryMethods`   | `string[]`                                              | `GET HEAD OPTIONS PUT DELETE` | Methods that may be retried                       |
+| `responseType`   | `"auto" \| "json" \| "text" \| "blob" \| "arrayBuffer"` | `"auto"`                      | How to read the body                              |
+| `fetch`          | `typeof fetch`                                          | global `fetch`                | Custom implementation (useful for tests)          |
 
 With `responseType: "auto"`, bodies with a JSON `content-type` are parsed, an empty body gives `undefined`, and anything else is returned as text.
 

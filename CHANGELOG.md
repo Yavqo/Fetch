@@ -13,4 +13,6 @@ Initial release.
 - `extend()` for derived clients, `head()`, `retryStatuses`, and `Retry-After` support (capped at 30s)
 - `validateStatus`, `onRetry`, and `responseType: "stream"`
 - `@yavqo/fetch/testing` with `mockFetch` and `jsonResponse`
+- Path params (`/users/:id`), default client `query`, `totalTimeout` and `retryJitter`
+- Error messages include the method and URL (without the query string) and errors expose `request`
 - Status helpers: `isSuccess`, `isRedirect`, `isClientError`, `isServerError`, `isInformational`
